@@ -8,9 +8,9 @@ agent.sql runs an agent loop inside one SQLite `WITH RECURSIVE` query. The desig
 
 ## Boundaries
 
-- `kernel/` (SQL): owns all agent control flow, scheduling, routing and budgets, inside one `WITH RECURSIVE` query.
-- `host/` (Python): domain-neutral runner and `sys()` dispatcher; no agent routing or control flow.
-- `handlers/` (Python): stateless I/O handlers (`llm.chat`, `py.call`, `mcp.call`, `sql.query`, `human.ask`, `io.emit`). They return errors as data and never raise. Python is only used if there practically is no other option.
+- `src/agent_sql/kernel/` (SQL): owns all agent control flow, scheduling, routing and budgets, inside one `WITH RECURSIVE` query.
+- `src/agent_sql/host/` (Python): domain-neutral runner and `sys()` dispatcher; no agent routing or control flow.
+- `src/agent_sql/handlers/` (Python): stateless I/O handlers (`llm.chat`, `py.call`, `mcp.call`, `sql.query`, `human.ask`, `io.emit`). They return errors as data and never raise. Python is only used if there practically is no other option.
 
 ## Rules
 

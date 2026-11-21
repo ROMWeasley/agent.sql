@@ -39,5 +39,6 @@ select = ["E", "F", "I", "UP", "B", "SIM", "S"]
 "tests/**/*.py" = ["S101"]
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
