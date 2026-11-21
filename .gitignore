@@ -221,3 +221,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# private notes (not versioned)
+.notes/
+
+# local SQLite databases (incl. WAL, shared-memory and journal files)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# local editor and agent state
+.vscode/
+.agent/
