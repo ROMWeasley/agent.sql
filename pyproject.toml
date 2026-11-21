@@ -1,0 +1,43 @@
+[project]
+name = "agent.sql"
+version = "0.0.1"
+description = "An agent runtime where the entire control loop runs inside one SQLite WITH RECURSIVE query."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+]
+
+[tool.uv]
+# Virtual project until v0 package code is added.
+package = false
+
+# Supply-chain cooldown: ignore releases uploaded to PyPI within the last 14 days.
+exclude-newer = "14 days"
+
+# Wheels-only: forbid building source distributions (blocks install-time code execution).
+no-build = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Includes flake8-bandit ("S") security checks.
+select = ["E", "F", "I", "UP", "B", "SIM", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

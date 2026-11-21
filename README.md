@@ -36,10 +36,8 @@ agent-sql run assistant "Check the latest status and summarize it."
 
 ## Current stage
 
-Early planning, no runnable code yet.
+Architecture verified
 
-- [x] Core architecture draft ([`docs/architecture.md`](docs/architecture.md))
-- [ ] **Spike 0:** verify SQLite assumptions (CTE streaming, nested JSON aggregates, WAL writer concurrency)
+- [x] Core architecture baseline ([`docs/architecture.md`](docs/architecture.md))
+- [x] **Spike 0:** verify SQLite assumptions (CTE streaming, nested JSON aggregates, WAL writer concurrency, Ctrl-C abort, JSON/JSONB limits)
 - [ ] **v0:** walking skeleton with a single `llm` agent loop, `sys()`, Python tools, and CLI
-
-The architecture may still change based on what Spike 0 reveals.

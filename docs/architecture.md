@@ -1,6 +1,6 @@
 # Architecture
 
-> Status: draft design
+> Status: v1 baseline (Spike 0 verified)
 
 ## 1. The idea in one paragraph
 
@@ -55,7 +55,7 @@ REDUCE  deliver results to A and B ...
 
 So the query is strictly single-threaded and deterministic, while the I/O runs in parallel. SQL owns the event loop and Python is just the I/O reactor. If no task is runnable, nothing is pending and the root task is not finished, the run ends with status `stuck` instead of spinning.
 
-**Kernel structure.** SQLite allows the recursive table only once in the `FROM` of each recursive `SELECT`, and helper CTEs or views cannot reference it. To keep the query readable, the recursive part is a compound `UNION ALL` of several `SELECT`s (SQLite ≥ 3.34), one per transition. Rather than repeating complex `WHERE` guards on every branch (where an overlap forks rows exponentially and a gap stops the run early), a single `sched` branch (`WHERE phase = 'sched'`) checks limits and deadlocks, picks the next runnable task into `active_task`, and sets `phase` (`'effect'`, `'llm_step'`, `'call_step'`, ...). Every other branch guards on a single scalar check (`WHERE phase = '...'`). Aggregates live in correlated scalar subqueries over `json_each(...)`. Multi-item work (spawning parallel children, consuming multiple completions) micro-steps one item per tick where practical so updates stay single-key `json_set`/`json_remove` calls.
+**Kernel structure.** SQLite allows the recursive table only once in the `FROM` of each recursive `SELECT`, and helper CTEs or views cannot reference it. To keep the query readable, the recursive part is a compound `UNION ALL` of several `SELECT`s (SQLite ≥ 3.34), one per transition. Rather than repeating complex `WHERE` guards on every branch (where an overlap forks rows exponentially and a gap stops the run early), a single `sched` branch (`WHERE phase = 'sched'`) checks limits and deadlocks, picks the next runnable task into `active_task`, and sets `phase` (`'effect'`, `'llm_step'`, `'call_step'`, ...). Every other branch guards on a single scalar check (`WHERE phase = '...'`). Aggregates live in correlated scalar subqueries over `json_each(...)`. Multi-item work (spawning parallel children, consuming multiple completions) micro-steps one item per tick where practical so updates stay single-key `json_set`/`json_remove` calls. The outer `SELECT` stays plain (no `ORDER BY`, which buffers via a temp B-tree; filter `trace_level` in Python to avoid the 1-effect lag of an outer `WHERE`). The EFFECT branch binds `sys(pending)` once via `JOIN json_each(json_array(sys(pending)))` so multiple columns (`completions`, `usage`, `status`) reuse the single call.
 
 ### 2.3 Tasks instead of a call stack
 
@@ -84,7 +84,7 @@ A task is runnable when it is `ready`, or when it is `waiting` and everything in
 
 Python is called in exactly one place in the kernel: the `sys()` call in the EFFECT branch. This has the following consequences:
 
-**Results can be reused.** Once an effect completes, its result stays in `completions` until consumed, so later ticks can read it as often as needed without re-calling `sys()`. When rebuilding JSON objects from `json_each(...)`, wrap nested objects, arrays and booleans via `CASE e.type` + `json(...)` rather than passing raw `e.value`, otherwise SQLite double-encodes objects as strings and turns booleans into `0`/`1`.
+**Results can be reused.** Once an effect completes, its result stays in `completions` until consumed, so later ticks can read it as often as needed without re-calling `sys()`. When rebuilding JSON objects from `json_each(...)`, wrap nested objects, arrays and booleans via `CASE e.type` + `json(...)` rather than passing raw `e.value`, otherwise SQLite double-encodes objects as strings and turns booleans into `0`/`1`. When merging overlapping JSON maps (`scope` patching, `completions`), filter base keys with `WHERE json_type(patch, '$.' || b.key) IS NULL` before `UNION ALL`, otherwise duplicate keys cause `json_extract` to return the stale first entry. Keep variadic `json_object`/`json_set` calls small (≤ 63 pairs) for builds compiled with `MAX_FUNCTION_ARG=127`.
 
 **Getting a fresh value** (time, random, a second LLM sample). Every effect carries an id (`r<run>_e<seq>`), and `sys()` is idempotent per id: same id returns the cached result, new id makes a new call. `sys()` also remembers `(op, args)` per id and returns an error completion if the same id reappears with different arguments (catching kernel non-determinism). Any key interpolated into SQLite JSON paths (`effect_id`, `task_id`, `agents.id`, `output_key`) must match `[a-zA-Z0-9_-]+`; untrusted strings from models or tools (like `tool_call.id`) are never used as JSON path keys.
 
@@ -128,7 +128,7 @@ Rules:
 
 Initial ops: `llm.chat`, `py.call`, `mcp.call`, `sql.query`, `human.ask`, `io.emit`. Wall-time budgets read timestamps and durations from `meta`. Later: `embed`, `tools.list`.
 
-Handlers run on an asyncio loop in a background thread; synchronous Python tools run in a thread pool so they don't block that loop. `sys()` itself runs on the SQLite thread and blocks further SQL processing until the batch is done.
+Handlers run on an asyncio loop in a background thread; synchronous Python tools run in a thread pool so they don't block that loop. `sys()` itself runs on the SQLite worker thread (alongside the serialized WAL writer) and blocks further SQL processing until the batch is done, keeping the main thread free to handle `SIGINT` immediately.
 
 ---
 
@@ -158,7 +158,7 @@ A `definition_errors` view catches invalid definitions (unknown models, invalid 
 
 Observability is a set of views over `trace` (timeline, spans, token usage, cost). Whether it is on, and how much it records, is a row in `settings`.
 
-**Connections.** Because the kernel holds a read transaction for the whole run, the DB uses WAL mode and all writes (`effects` and `trace`) go through a single serialized writer connection while the kernel cursor is open. That gives the kernel snapshot isolation against definition edits mid-run. The trade-off is that the WAL cannot checkpoint past an active reader, so it grows during a run and shrinks once the run finishes (if long human waits make it large, the journal can move to a separate DB file). WAL requires a local filesystem; on WSL, keep databases on the Linux side rather than `/mnt/c`.
+**Connections.** Because the kernel holds a read transaction for the whole run, the DB uses WAL mode and all writes (`effects` and `trace`) go through a single serialized writer connection while the kernel cursor is open. That gives the kernel snapshot isolation against definition edits mid-run. The trade-off is that the WAL cannot checkpoint past an active reader, so it grows during a run and shrinks back to zero via `PRAGMA wal_checkpoint(TRUNCATE)` once the cursor closes (if long human waits make it large, the journal can move to a separate DB file). WAL requires a local filesystem; on WSL, keep databases on the Linux side rather than `/mnt/c`.
 
 ---
 
@@ -299,18 +299,18 @@ Ways to extend the system, from most to least common:
 
 ---
 
-## 10. Assumptions to verify (Spike 0)
+## 10. Verified assumptions (Spike 0)
 
-| Assumption | If it does not hold |
+| Assumption | Spike 0 result |
 |---|---|
-| Rows of a compound (`UNION ALL`) recursive CTE stream to the cursor as they are produced | Live output still works (`io.emit` prints from the handler) and `sys()` still persists completions; only `trace` is written at the end. Alternatively, split runs into segments at EFFECT boundaries. |
-| `WHERE phase = 'effect'` prevents `sys()` from running on non-matching ticks, and `sys()` runs once per EFFECT row | Repeats are harmless thanks to the id cache; they only cost time. |
-| Correlated scalar subqueries with aggregates (`json_group_object`, ...) work inside the recursive SELECT | Move the affected logic into a listed pure helper UDF (§2.4). |
-| Compound recursive SELECTs (≥ 3.34) work with JSON columns | One recursive SELECT with a `CASE` per column. |
-| `json_each` rebuilds preserve nested objects/booleans/`null`s, and `json_set`/`json_extract` stay fast for 100 KB–few MB worlds | Move affected transforms to a pure helper UDF (§2.4), or switch CTE columns to JSONB (SQLite ≥ 3.45) with smaller message windows. |
-| A second connection can commit to `trace` while the kernel cursor is open (WAL) | Journal in a separate database file. |
-| Ctrl-C ends a run cleanly, even during a blocking batch | Run handlers with hard timeouts and check a cancel flag between batches. |
-| SQLite ≥ 3.38 (compound recursive CTEs + `->`/`->>` JSON operators) is available on all targets (x86_64 and arm64 Linux, including WSL) | Use a `uv`-managed Python with a bundled SQLite, or `apsw`. |
+| Rows of a compound (`UNION ALL`) recursive CTE stream to the cursor as they are produced | **Verified** (`CO-ROUTINE`). Never use outer `ORDER BY` (buffers via temp B-tree); filter `trace_level` in Python over a plain outer `SELECT` to avoid outer-`WHERE` lag. |
+| `WHERE phase = 'effect'` prevents `sys()` from running on non-matching ticks, and `sys()` runs once per EFFECT row | **Verified** (`0` non-effect calls, 1×/row). Lateral `JOIN json_each(json_array(sys(...)))` reuses one call across multiple columns while keeping `CO-ROUTINE`. |
+| Correlated scalar subqueries with aggregates (`json_group_object`, ...) work inside the recursive SELECT | **Verified** (`json_group_object`, ordered `json_group_array`, `SUM`, and doubly-correlated `NOT EXISTS` over `waiting_on`, all with `CO-ROUTINE`). |
+| Compound recursive SELECTs (≥ 3.34) work with JSON columns | **Verified** (nested `WITH RECURSIVE` in scalar subqueries also works). |
+| `json_each` rebuilds preserve nested objects/booleans/`null`s, and `json_set`/`json_extract` stay fast for 100 KB–few MB worlds | **Verified** with `CASE e.type` (for booleans) and `json_type(...) IS NULL` deduplication on merges. Text JSON stays sub-ms/tick up to 1 MB; JSONB works across CTE ticks (`~2–3.5×` faster) if ever needed. |
+| A second connection can commit to `trace` while the kernel cursor is open (WAL) | **Verified** (concurrent `effects` + `trace` commits, kernel snapshot isolation, live `mode=ro` readers, `0 B` WAL after `PRAGMA wal_checkpoint(TRUNCATE)`). |
+| Ctrl-C ends a run cleanly, even during a blocking batch | **Verified** (`< 1 ms` abort via main-thread `SIGINT` → cancel asyncio future + `conn.interrupt()` on worker thread; `sys()` catches `CancelledError`; DB integrity intact). |
+| SQLite ≥ 3.38 (compound recursive CTEs + `->`/`->>` JSON operators) is available on all targets (x86_64 and arm64 Linux, including WSL) | **Verified** (stdlib `sqlite3` covers all features incl. `ENABLE_MATH_FUNCTIONS`, `set_authorizer`, `set_progress_handler`, `threadsafety=3`; pin Python via `uv`). |
 
 ---
 
