@@ -42,6 +42,7 @@ def run_kernel(
 ) -> Iterator[Tick]:
     """Stream ticks from kernel.sql, wrapping sys_fn so exceptions become data."""
 
+    # create sy function
     # An uncaught exception in a Python UDF aborts the SQLite query, so convert any
     # failure into per-effect error completions and let SQL handle task failure.
     def _sys(pending_json: str) -> str:
@@ -61,6 +62,7 @@ def run_kernel(
                 }
             )
 
+    # register sys function
     conn.create_function("sys", 1, _sys)
     cursor = conn.execute(
         load_kernel_sql(),

@@ -78,7 +78,7 @@ A call stack can only express one thread of execution, but parallel sub-agents n
 
 A task is runnable when it is `ready`, or when it is `waiting` and everything in `waiting_on` has arrived (either finished child tasks or keys in `completions`). A composite agent (sequential, parallel, ...) spawns child tasks and waits on their ids. Nesting, recursion and fan-out all fall out of this without mutual recursion between CTEs. `messages` holds previous turns, tool calls and results in the OpenAI chat format.
 
-**Data flow is scoped, not global.** Children never write shared state; each child writes only its own `result`. When a child finishes, its parent stores that result under the child's `output_key` in its own `scope` (for parallel children: on join, in child order). A child receives a snapshot when it is spawned: its `input` is the parent's `scope` patched with its explicit arguments, so a sequential child sees the results of earlier siblings. Because every composite task has its own scope, recursive or repeated sub-agents never overwrite each other's keys. The root task's scope is the run's state and becomes the run result.
+**Data flow is scoped, not global.** Children never write shared state; each child writes only its own `result`. When a child finishes, its parent stores that result under the child's `output_key` in its own `scope` (for parallel children: on join, in child order). A child receives a snapshot when it is spawned: its `input` is the parent's `scope` patched with its explicit arguments, so a sequential child sees the results of earlier siblings. Because every composite task has its own scope, recursive or repeated sub-agents never overwrite each other's keys. The root task's scope is the run's state and becomes the run result. A run's entry input is a JSON object (default `{}`), so prompts are optional: `{"prompt": "..."}` seeds an initial user turn for chat-style agents, while autonomous or structured agents can run without one.
 
 ### 2.4 Why there is only one impure call
 
@@ -223,7 +223,7 @@ WHERE s.kind = 'mcp';
 
 ## 6. Outputs, humans and long waits
 
-Anything the user should see goes through `io.emit` (turn-based, not token-by-token streaming), and questions go through `human.ask`. Both are ordinary effects, ordered and recorded like everything else. `sys()` writes each completion to `effects` as it arrives (crash recovery), while the host streams ticks from the `kernel.sql` cursor and writes `trace` rows on the same serialized writer connection (§4).
+Passive progress (ticks, thinking notes, tool calls, final answers) is observed directly from the streamed `kernel.sql` cursor and `trace` table without extra `sys()` calls. Deliberate workflow outputs go through `io.emit` and questions through `human.ask`; both are awaited inside `sys()` so ordering (e.g. showing context before `human.ask`) and the `effects` journal stay truthful. Live token-by-token streaming, if added later, stays an ephemeral side-channel callback inside the `llm.chat` handler while SQL still receives one deterministic completion. `sys()` writes each completion to `effects` as it arrives (crash recovery), while the host streams ticks from the cursor and writes `trace` rows on the same serialized writer connection (§4).
 
 `human.ask` has two modes:
 
@@ -273,12 +273,13 @@ The recursive CTE itself is iterative, so there is no stack to blow. Since every
 ## 9. Architecture layers
 
 ```
-host/        Python, knows nothing about agents:
+src/agent_sql/
+  host/      Python, knows nothing about agents:
              runner (runs statements, streams rows into trace),
              sys dispatcher, handler registry, replay source, CLI
-kernel/      the SQL: schema, kernel.sql, start/finish, views
-handlers/    llm (OpenAI-compatible), py tools, mcp, sql.query, human, io
-embed/       (later) embed.sql backends, index job
+  kernel/    the SQL: schema, kernel.sql, start/finish, views
+  handlers/  llm (OpenAI-compatible), py tools, mcp, sql.query, human, io
+  embed/     (later) embed.sql backends, index job
 ```
 
 Ways to extend the system, from most to least common:

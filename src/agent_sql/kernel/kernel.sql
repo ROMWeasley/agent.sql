@@ -7,7 +7,7 @@
 --
 -- Bound parameters: :run_id (int), :agent_id (text), :prompt (text).
 WITH RECURSIVE world(tick, seq, status, phase, active_task, tasks, pending, completions, usage) AS (
-    -- Tick 0: seed root task t1 in OpenAI message format (omit system turn if instruction is empty)
+    -- Tick 0: recursion anchor. Seed root task t1 in OpenAI message format (omit system turn if instruction is empty)
     SELECT
         0,
         1,
