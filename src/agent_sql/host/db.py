@@ -1,4 +1,4 @@
-"""SQLite connection setup, idempotent schema initialization, and reset helpers."""
+"""SQLite connection setup, idempotent schema initialization, and WAL helpers."""
 
 import sqlite3
 from pathlib import Path
@@ -7,12 +7,30 @@ SCHEMA_VERSION = 1
 KERNEL_DIR = Path(__file__).resolve().parent.parent / "kernel"
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    """Apply connection pragmas and ensure the schema is present."""
+def _apply_pragmas(conn: sqlite3.Connection) -> None:
+    """Apply per-connection pragmas (foreign keys, disk temp spill, lock timeout, NORMAL sync)."""
     conn.execute("PRAGMA foreign_keys = ON")
     # Spill CTE/subquery temp materializations to disk rather than exhausting RAM.
     conn.execute("PRAGMA temp_store = FILE")
     conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA synchronous = NORMAL")
+
+
+def connect_db(path: str | Path = ":memory:") -> sqlite3.Connection:
+    """Open a SQLite connection with runtime pragmas, without running DDL.
+
+    Separate reader connections (such as the kernel cursor under WAL) use this
+    so they never contend for a write lock on an already-initialized database.
+    """
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    _apply_pragmas(conn)
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    """Apply pragmas and idempotently ensure the v1 schema and default settings exist."""
+    _apply_pragmas(conn)
     # WAL lets readers/writers operate concurrently while the kernel cursor stays open.
     conn.execute("PRAGMA journal_mode = WAL")
 
@@ -29,10 +47,19 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def open_db(path: str | Path = ":memory:") -> sqlite3.Connection:
     """Open a DB connection, safely initializing new DBs while leaving existing data intact."""
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    init_db(conn)
+    conn = connect_db(path)
+    try:
+        init_db(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
+
+
+def checkpoint_wal(conn: sqlite3.Connection) -> tuple[int, int, int]:
+    """Truncate the WAL back to zero bytes; returns (busy, log_frames, checkpointed_frames)."""
+    busy, log, checkpointed = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    return int(busy), int(log), int(checkpointed)
 
 
 def reset_db(path: Path) -> sqlite3.Connection:

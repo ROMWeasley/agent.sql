@@ -5,9 +5,9 @@
 -- `UNION ALL` branch guards on a disjoint `phase` so at most one branch fires per tick,
 -- and transitioning to `phase = 'halt'` terminates the CTE cleanly.
 --
--- Bound parameters: :run_id (int), :agent_id (text), :prompt (text).
+-- Bound parameters: :run_id (int), :agent_id (text), :input (JSON object text).
 WITH RECURSIVE world(tick, seq, status, phase, active_task, tasks, pending, completions, usage) AS (
-    -- Tick 0: recursion anchor. Seed root task t1 in OpenAI message format (omit system turn if instruction is empty)
+    -- Tick 0: recursion anchor. Seed root task t1 from structured :input (prompt is optional).
     SELECT
         0,
         1,
@@ -20,15 +20,22 @@ WITH RECURSIVE world(tick, seq, status, phase, active_task, tasks, pending, comp
                 'agent', a.id,
                 'status', 'ready',
                 'waiting_on', json('[]'),
-                'input', json_object('prompt', :prompt),
+                'input', json(:input),
                 'messages', CASE
-                    WHEN a.instruction != '' THEN json_array(
+                    WHEN a.instruction != ''
+                     AND json_type(:input, '$.prompt') = 'text'
+                     AND (:input ->> '$.prompt') != '' THEN json_array(
                         json_object('role', 'system', 'content', a.instruction),
-                        json_object('role', 'user', 'content', :prompt)
+                        json_object('role', 'user', 'content', :input ->> '$.prompt')
                     )
-                    ELSE json_array(
-                        json_object('role', 'user', 'content', :prompt)
+                    WHEN a.instruction != '' THEN json_array(
+                        json_object('role', 'system', 'content', a.instruction)
                     )
+                    WHEN json_type(:input, '$.prompt') = 'text'
+                     AND (:input ->> '$.prompt') != '' THEN json_array(
+                        json_object('role', 'user', 'content', :input ->> '$.prompt')
+                    )
+                    ELSE json('[]')
                 END,
                 'result', NULL
             )
