@@ -36,7 +36,7 @@ $$
 
 Since $\delta$ is pure, a run is fully determined by its initial world and the sequence of completions (not to be confused with LLM text completions) $c_1, \dots, c_n$. Recording those gives replay, forking, crash recovery and LLM-free tests (under the conditions in §2.6).
 
-Physically, $w$ is the current row of the recursive CTE, split across columns rather than one blob: scalars `tick`, `seq`, `status`, `phase`, `active_task` and JSON columns `tasks`, `pending`, `completions`, `usage` (text JSON first for simplicity and debuggability; JSONB on SQLite ≥ 3.45 is a drop-in optimization later if profiling calls for it). Transitions only rewrite the columns they change, and the EFFECT tick calls `sys(pending)` and merges the results into `completions`.
+Physically, $w$ is the current row of the recursive CTE, split across columns rather than one blob: scalars `tick`, `seq`, `status`, `phase`, `active_task` and JSON columns `tasks`, `pending`, `completions`, `usage` (text JSON first for simplicity and debuggability; JSONB on SQLite ≥ 3.45 is a drop-in optimization later if profiling calls for it, and multi-agent runs can split lightweight scheduling state from heavy per-task contexts and prune finished child histories on join). Transitions only rewrite the columns they change, and the EFFECT tick calls `sys(pending)` and merges the results into `completions`.
 
 ### 2.2 Two kinds of ticks
 
@@ -102,7 +102,7 @@ Python is called in exactly one place in the kernel: the `sys()` call in the EFF
 - **Journal.** Because $\delta$ is deterministic, the initial world plus the `effects` log (every completed `sys()` call) are enough to reconstruct a run. `trace` separately records ticks and periodic world checkpoints depending on `trace_level`.
 - **Replay** runs the kernel with `sys()` served from the journal. It requires the same definitions: `start.sql` stores a JSON snapshot of the rows a run uses in `runs`, and replay refuses to run if they changed. Exact replay also assumes the same SQLite version, since JSON formatting can differ between versions.
 - **Crash recovery** restarts from the last checkpoint and feeds the journaled completions back in. Effects that were in flight during the crash run again (at-least-once), so tools with external side effects should be idempotent.
-- **Fork** starts a new run from any checkpoint, for example with a different human answer.
+- **Fork** starts a new run from any checkpoint, for example with a different human answer. Both recovery and fork seed an optional checkpoint world into `kernel.sql`'s anchor, so fresh runs, resumes, forks, and fixture tests all run the same query.
 
 ---
 
@@ -112,7 +112,7 @@ Python is called in exactly one place in the kernel: the `sys()` call in the EFF
 
 ```json
 [{"id": "r9_e7", "op": "llm.chat", "args": {}},
- {"id": "r9_e8", "op": "py.call",  "args": {"name": "calculator", "arguments": {}}}]
+ {"id": "r9_e8", "op": "py.call",  "args": {"server": "python", "name": "calculator", "arguments": {}}}]
 ```
 ```json
 {"r9_e7": {"ok": true,  "value": {}, "meta": {"ms": 812}},
@@ -124,7 +124,7 @@ Rules:
 - Handlers never raise. Transport retries (HTTP 429/503 with backoff) stay inside the handler; unrecovered errors come back as data, and SQL decides on logical retries, fallbacks or aborting.
 - SQL resolves everything before emitting an effect (which tool server, which model, which arguments). Python only maps `op -> handler`, so there is no routing in Python.
 - Every effect has a timeout (default in `settings`, overridable per effect). A timeout is an error completion.
-- Version 1 waits for the whole batch, so parallel tasks advance in lockstep and one slow call holds back the others. Later, `sys()` may return only the completions that are already done, in an io_uring style. Tasks already wait on ids, so the kernel does not change.
+- Version 1 waits for the whole batch, so parallel tasks advance in lockstep and one slow call holds back the others. Later, `sys()` may return only the completions that are already done, in an io_uring style, keeping unreturned ids in `pending` and journaling batch boundaries so replay stays deterministic.
 
 Initial ops: `llm.chat`, `py.call`, `mcp.call`, `sql.query`, `human.ask`, `io.emit`. Wall-time budgets read timestamps and durations from `meta`. Later: `embed`, `tools.list`.
 

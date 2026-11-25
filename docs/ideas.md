@@ -38,4 +38,5 @@ CTE intermediates across 48+ matmul `GROUP BY`s are unindexed, so this probably 
 - A `graph` agent kind with its own edges table, for LangGraph-style workflows.
 - `inbox.poll` and A2A, so agents can receive messages from other systems while running.
 - A TUI or web view over `trace`.
+- Governance and IAM as views: principals, tool grants, budgets and human-approval policies evaluated as SQL joins before `sys()`.
 - An agent that analyzes its own past runs with SQL tools.

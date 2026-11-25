@@ -21,7 +21,38 @@ SELECT
             'config', json(a.config)
         ),
         -- Re-wrap COALESCE in json() because COALESCE drops the JSON subtype from json_group_object().
-        'settings', json(COALESCE((SELECT json_group_object(s.key, s.value) FROM settings AS s), '{}'))
+        'settings', json(COALESCE((SELECT json_group_object(s.key, s.value) FROM settings AS s), '{}')),
+        'tools', json(COALESCE((
+            SELECT json_group_array(
+                json_object(
+                    'server_id', bt.server_id,
+                    'server_kind', bt.server_kind,
+                    'name', bt.name,
+                    'description', bt.description,
+                    'input_schema', json(bt.input_schema)
+                )
+                ORDER BY bt.name ASC, bt.server_id ASC
+            )
+            FROM (
+                SELECT
+                    t.server_id,
+                    ts.kind AS server_kind,
+                    t.name,
+                    t.description,
+                    t.input_schema,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY t.name
+                        ORDER BY CASE WHEN at.tool_name IS NOT NULL THEN 0 ELSE 1 END, t.server_id ASC
+                    ) AS rn
+                FROM agent_tools AS at
+                JOIN tools AS t
+                  ON t.server_id = at.server_id
+                 AND (at.tool_name IS NULL OR at.tool_name = t.name)
+                JOIN tool_servers AS ts ON ts.id = t.server_id
+                WHERE at.agent_id = a.id
+            ) AS bt
+            WHERE bt.rn = 1
+        ), '[]'))
     )
 FROM agents AS a
 WHERE a.id = :agent_id

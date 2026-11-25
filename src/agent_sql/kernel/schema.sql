@@ -22,6 +22,36 @@ CREATE TABLE IF NOT EXISTS agents (
     config       TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config))
 );
 
+CREATE TABLE IF NOT EXISTS tool_servers (
+    id     TEXT PRIMARY KEY
+           CHECK (id != '' AND id NOT GLOB '*[^a-zA-Z0-9_-]*'),
+    kind   TEXT NOT NULL
+           CHECK (kind IN ('python', 'mcp', 'sql')),
+    config TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config) AND json_type(config) = 'object')
+);
+
+CREATE TABLE IF NOT EXISTS tools (
+    server_id    TEXT NOT NULL REFERENCES tool_servers(id),
+    name         TEXT NOT NULL
+                 CHECK (name != '' AND name NOT GLOB '*[^a-zA-Z0-9_-]*'),
+    description  TEXT NOT NULL DEFAULT '',
+    input_schema TEXT NOT NULL DEFAULT '{"type":"object","properties":{}}'
+                 CHECK (json_valid(input_schema) AND json_type(input_schema) = 'object'),
+    body         TEXT,
+    PRIMARY KEY (server_id, name)
+);
+
+-- tool_name = NULL binds every tool registered under server_id.
+CREATE TABLE IF NOT EXISTS agent_tools (
+    agent_id  TEXT NOT NULL REFERENCES agents(id),
+    server_id TEXT NOT NULL REFERENCES tool_servers(id),
+    tool_name TEXT,
+    FOREIGN KEY (server_id, tool_name) REFERENCES tools(server_id, name)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tools_binding
+    ON agent_tools(agent_id, server_id, COALESCE(tool_name, ''));
+
 CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id    TEXT    NOT NULL REFERENCES agents(id),
